@@ -18,3 +18,5 @@ python -m oleg_web
 # Выберите пример на странице и нажмите «Прогнать».
 python -m oleg_pipeline run --examples examples --engine "python -m oleg_engine run --input {input} --registry {registry}"
 ```
+
+> Windows: запускайте из консоли UTF-8 (`chcp 65001` в cmd, PowerShell 7 уже UTF-8). Из консоли с кодовой страницей 866 промпт доходит до codex искажённым, и прогон молча даёт 0 записей.
