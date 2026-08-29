@@ -130,9 +130,8 @@ class RoomEngineTests(unittest.TestCase):
 
         self.assertEqual(result, 17)
 
-    @unittest.expectedFailure
     def test_default_room_root_has_runnable_cli(self) -> None:
-        """HIGH: documented default root has no cli.py, so normal use exits 2."""
+        """Default room root (repo root) holds cli.py after the upstream merge, so normal use runs it."""
         with tempfile.TemporaryDirectory() as directory:
             temp = pathlib.Path(directory)
             argv = [
