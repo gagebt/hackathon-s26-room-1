@@ -92,7 +92,7 @@ class DatesAndMarkdownTests(unittest.TestCase):
         open_section, closed_section = markdown.split("## Закрытые и отменённые", maxsplit=1)
 
         self.assertIn("Еженедельный отчёт · Олег · **до 30.08** · recurring", open_section)
-        self.assertIn("Встреча команды · Олег · **до 30.08** · event", open_section)
+        self.assertIn("Встреча команды · Олег · **30.08** · event", open_section)
         for what, status in (
             ("Готовая задача", "done"),
             ("Отменённая задача", "cancelled"),

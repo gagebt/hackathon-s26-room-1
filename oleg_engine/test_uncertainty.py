@@ -82,7 +82,7 @@ class UncertaintyTests(unittest.TestCase):
         markdown = render_markdown([self._render_item(self.old_uncertainty)])
 
         self.assertIn(
-            "1. Отправить отчёт · Павел · **до 29.08** · источник: source.txt: «Отправить отчёт»"
+            "1. Отправить отчёт · Павел · **до пятницы (29.08)** · источник: source.txt: «Отправить отчёт»"
             " · ⚠ Неясно, включена ли пятница\n",
             markdown,
         )

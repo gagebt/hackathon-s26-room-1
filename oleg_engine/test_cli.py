@@ -41,7 +41,15 @@ class CliTests(unittest.TestCase):
     def _fake_model(prompts: list[str] | None = None):
         lock = threading.Lock()
 
-        def fake(prompt: str, schema: dict, backend: str, model: str | None):
+        def fake(
+            prompt: str,
+            schema: dict,
+            backend: str,
+            model: str | None,
+            effort: str,
+        ):
+            if effort != "medium":
+                raise AssertionError(f"unexpected default effort: {effort}")
             path = re.search(r"(?m)^SOURCE PATH: (.+)$", prompt).group(1)
             text = re.search(r"(?s)TEXT:\n(.*)\Z", prompt).group(1).rstrip("\n")
             with lock:
@@ -107,6 +115,7 @@ class CliTests(unittest.TestCase):
             self.assertTrue((root / "registry.md").is_file())
             registry = json.loads(registry_path.read_text(encoding="utf-8"))
             self.assertEqual("Send report", registry["obligations"][0]["what"])
+            self.assertEqual("medium", registry["runs"][-1]["effort"])
             self.assertIn("Send report", (root / "registry.md").read_text(encoding="utf-8"))
 
     def test_json_flag_prints_machine_readable_counts_only(self) -> None:

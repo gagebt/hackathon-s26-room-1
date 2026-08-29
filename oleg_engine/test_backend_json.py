@@ -25,13 +25,14 @@ class BackendJsonTests(unittest.TestCase):
         expected = {"answer": "from codex"}
 
         def fake_run(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            self.assertIn("model_reasoning_effort=medium", args)
             output_path = args[args.index("-o") + 1]
             with open(output_path, "w", encoding="utf-8") as output:
                 json.dump(expected, output)
             return completed(args, stdout="progress that is not the answer")
 
         with patch("oleg_engine.backend.subprocess.run", side_effect=fake_run):
-            result = backend._run_codex("prompt", SCHEMA, "test-model")
+            result = backend._run_codex("prompt", SCHEMA, "test-model", "medium")
 
         self.assertEqual(expected, result)
 
@@ -71,7 +72,7 @@ class BackendJsonTests(unittest.TestCase):
             return_value=completed(["codex"], stdout=rejected),
         ) as run:
             with self.assertRaises(backend.BackendError) as raised:
-                backend._run_codex("prompt", SCHEMA, "test-model")
+                backend._run_codex("prompt", SCHEMA, "test-model", "medium")
 
         self.assertEqual(2, run.call_count)
         self.assertIn(rejected[:12], str(raised.exception))
