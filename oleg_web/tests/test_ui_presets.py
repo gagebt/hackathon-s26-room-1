@@ -82,7 +82,7 @@ def main() -> int:
             page.dispatch_event("#engpreset", "change")
             after = page.input_value("#engcmd")
             print("after oleg:", after)
-            check("oleg_engine" in after, "пресет oleg подставляет команду")
+            check(after == "", "пресет oleg использует встроенную команду и сохраняет режим")
             page.fill("#engcmd", "x")
             print("after manual edit preset:", page.input_value("#engpreset"))
             check(page.input_value("#engpreset") == "custom", "ручная правка переключает пресет в «своя»")

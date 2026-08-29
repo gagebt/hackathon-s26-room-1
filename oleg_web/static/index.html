@@ -190,7 +190,10 @@ function initPresets(){
   if(!CFG.cli_path){ opt.disabled = true; opt.title = "cli.py не найден"; opt.textContent = "cli.py комнаты (не найден)"; }
   else opt.title = CFG.cli_path;
   sel.value = "oleg";   // по умолчанию — oleg_engine; пустое поле = встроенный запуск с режимом/бэкендом
-  sel.addEventListener("change", () => { const f = PRESETS[sel.value]; if(f) $("#engcmd").value = f(); });
+  sel.addEventListener("change", () => {
+    if(sel.value === "oleg") $("#engcmd").value = "";
+    else { const f = PRESETS[sel.value]; if(f) $("#engcmd").value = f(); }
+  });
   $("#engcmd").addEventListener("input", () => { sel.value = "custom"; });
 }
 

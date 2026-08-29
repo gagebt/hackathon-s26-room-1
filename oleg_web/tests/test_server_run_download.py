@@ -76,7 +76,6 @@ class ServerRunDownloadTests(unittest.TestCase):
         self.assertEqual(f"Файл не найден: {missing}", response.text)
         self.assertEqual(1, len(response.text.splitlines()))
 
-    @unittest.expectedFailure
     def test_download_rejects_unsupported_kind(self) -> None:
         """MEDIUM defect: unsupported download kinds fall through to Markdown."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -109,6 +108,35 @@ class ServerRunDownloadTests(unittest.TestCase):
         rendered = "\n".join(status["lines"] + [status["error"]])
         self.assertNotIn("Traceback", rendered)
         self.assertEqual(1, len(status["error"].splitlines()))
+
+    def test_failed_fresh_run_restores_existing_registry_and_markdown(self) -> None:
+        """HIGH audit regression: a failed fresh run must not erase the current result."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "input"
+            input_dir.mkdir()
+            registry = root / "registry.json"
+            report = root / "registry.md"
+            old_json = b'{"obligations":[{"id":"keep-me"}]}'
+            old_md = b"# keep me\n"
+            registry.write_bytes(old_json)
+            report.write_bytes(old_md)
+            with patch.object(server.subprocess, "Popen", side_effect=FileNotFoundError("broken-fresh")):
+                response = self.client.post(
+                    "/api/run",
+                    json={
+                        "input": str(input_dir),
+                        "registry": str(registry),
+                        "engine_cmd": "broken-fresh {input} {registry}",
+                        "fresh": True,
+                    },
+                )
+                status = self._finished_run(response.json()["run"])
+
+            self.assertEqual(-1, status["exit"])
+            self.assertEqual(old_json, registry.read_bytes())
+            self.assertEqual(old_md, report.read_bytes())
+            self.assertEqual([], list(root.glob("*.bak")))
 
     def test_fake_engine_run_substitutes_all_placeholders_and_updates_registry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

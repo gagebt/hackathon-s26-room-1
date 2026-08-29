@@ -42,14 +42,13 @@ class ServerReadTests(unittest.TestCase):
             [{key: row[key] for key in fields} for row in actual],
         )
 
-    @unittest.expectedFailure
     def test_missing_registry_query_returns_json_error_without_traceback(self) -> None:
         """HIGH defect: ?registry is ignored, so the default data is returned."""
         missing = Path(self.temp_dir.name) / "missing.json"
 
         response = self.client.get("/api/registry", params={"registry": str(missing)})
 
-        self.assertEqual(200, response.status_code)
+        self.assertEqual(404, response.status_code)
         payload = response.json()
         self.assertFalse(payload["ok"])
         self.assertIn("error", payload)

@@ -86,7 +86,6 @@ class SaveEndpointTests(unittest.TestCase):
             (fresh_row["owner"], fresh_row["due"], fresh_row["status"]),
         )
 
-    @unittest.expectedFailure
     def test_malformed_json_returns_400_json(self) -> None:
         """HIGH defect: malformed save JSON returns 500 instead of client error 400."""
         response = self.client.post(
@@ -101,7 +100,6 @@ class SaveEndpointTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertIn("error", payload)
 
-    @unittest.expectedFailure
     def test_unknown_id_returns_error_and_does_not_rewrite_file(self) -> None:
         """HIGH defect: an unknown ID returns success and rewrites the registry."""
         before = self._sha256()

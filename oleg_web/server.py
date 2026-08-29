@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTex
 
 # --------------------------------------------------------------------------
 # FEATURES — единственное место, где включаются/выключаются надстройки.
-# Каждая по умолчанию выключена, пока её собственный тест не пройдёт.
+# Все проверенные надстройки включены по умолчанию.
 # Переопределение: env OLEG_WEB_FEATURES="timeline,edit" или ?features=timeline
 # Префикс "-" выключает: ?features=-edit
 # --------------------------------------------------------------------------
@@ -44,14 +44,17 @@ SAMPLE_REGISTRY = HERE / "sample" / "registry.json"
 # Поиск движка и пайплайна
 # --------------------------------------------------------------------------
 def _candidate_dirs(env_var: str, module: str) -> List[Path]:
-    cands: List[Path] = []
+    # После слияния продукты лежат рядом в корне репозитория. Явная
+    # переменная нужна для разработки в раздельных worktree, но не должна
+    # перекрывать цельный checkout.
+    cands: List[Path] = [REPO_ROOT]
     env = os.environ.get(env_var)
     if env:
         cands.append(Path(env))
-    cands.append(REPO_ROOT)
-    cands.append(REPO_ROOT.parent / "wt-engine")
-    cands.append(REPO_ROOT.parent / "wt-pipeline")
-    cands.append(REPO_ROOT.parent / "hackathon-s26-room-1")
+    if module == "oleg_engine":
+        cands.append(REPO_ROOT.parent / "wt-engine")
+    elif module == "oleg_pipeline":
+        cands.append(REPO_ROOT.parent / "wt-pipeline")
     out: List[Path] = []
     for c in cands:
         try:
@@ -66,6 +69,8 @@ def _candidate_dirs(env_var: str, module: str) -> List[Path]:
 def find_module_dir(env_var: str, module: str) -> Optional[Path]:
     """Каталог, из которого импортируется <module> (в нём лежит <module>/__main__.py)."""
     for c in _candidate_dirs(env_var, module):
+        if c.name == module and ((c / "__main__.py").is_file() or (c / "__init__.py").is_file()):
+            return c.parent
         if (c / module / "__main__.py").is_file() or (c / module / "__init__.py").is_file():
             return c
     return None
@@ -223,7 +228,34 @@ def _readable_error(run: Run) -> str:
     return f"Процесс завершился с кодом {run.exit_code}."
 
 
-def _spawn(run: Run, cmd: List[str], cwd: Path, env: Dict[str, str]) -> None:
+def _restore_or_commit_fresh(run: Run, backups: Dict[Path, Optional[Path]], required: Path) -> None:
+    """Сохранить новый реестр только после успешного процесса с валидным JSON."""
+    valid = run.exit_code == 0 and required.is_file()
+    if valid:
+        try:
+            data = read_registry(required)
+            valid = isinstance(data.get("obligations"), list)
+        except (OSError, json.JSONDecodeError, AttributeError):
+            valid = False
+    if valid:
+        for backup in backups.values():
+            if backup and backup.is_file():
+                backup.unlink()
+        return
+
+    for target, backup in backups.items():
+        if target.is_file():
+            target.unlink()
+        if backup and backup.is_file():
+            os.replace(backup, target)
+    if run.exit_code == 0:
+        run.exit_code = -1
+        run.error = "Движок не создал валидный реестр; прежний реестр восстановлен."
+
+
+def _spawn(run: Run, cmd: List[str], cwd: Path, env: Dict[str, str],
+           fresh_backups: Optional[Dict[Path, Optional[Path]]] = None,
+           required_output: Optional[Path] = None) -> None:
     run.cmd = " ".join(cmd)
 
     def worker() -> None:
@@ -236,6 +268,8 @@ def _spawn(run: Run, cmd: List[str], cwd: Path, env: Dict[str, str]) -> None:
         except Exception as exc:  # noqa: BLE001
             run.error = f"Не удалось запустить процесс: {exc}"
             run.exit_code = -1
+            if fresh_backups is not None and required_output is not None:
+                _restore_or_commit_fresh(run, fresh_backups, required_output)
             run.done = True
             return
         assert proc.stdout is not None
@@ -254,6 +288,8 @@ def _spawn(run: Run, cmd: List[str], cwd: Path, env: Dict[str, str]) -> None:
                     continue
         if proc.returncode != 0:
             run.error = _readable_error(run)
+        if fresh_backups is not None and required_output is not None:
+            _restore_or_commit_fresh(run, fresh_backups, required_output)
         run.done = True
 
     threading.Thread(target=worker, daemon=True).start()
@@ -276,9 +312,12 @@ async def json_body(request: Request) -> Dict[str, Any]:
     """Тело запроса или понятная ошибка вместо 500 на битом UTF-8/JSON."""
     raw = await request.body()
     try:
-        return json.loads(raw.decode("utf-8"))
+        data = json.loads(raw.decode("utf-8"))
     except UnicodeDecodeError:
-        return json.loads(raw.decode("utf-8", "replace"))
+        data = json.loads(raw.decode("utf-8", "replace"))
+    if not isinstance(data, dict):
+        raise ValueError("верхний уровень JSON должен быть объектом")
+    return data
 
 
 def effective_features(request: Optional[Request]) -> Dict[str, bool]:
@@ -336,12 +375,14 @@ def api_config(request: Request) -> JSONResponse:
 
 
 @app.get("/api/registry")
-def api_registry(path: str = "") -> JSONResponse:
-    p = Path(path) if path else ensure_default_registry()
+def api_registry(path: str = "", registry: str = "") -> JSONResponse:
+    requested = registry or path
+    p = Path(requested) if requested else ensure_default_registry()
     if not p.is_absolute():
         p = (REPO_ROOT / p).resolve()
     if not p.is_file():
-        return JSONResponse({"ok": False, "error": f"Реестр не найден: {p}", "path": str(p)})
+        return JSONResponse({"ok": False, "error": f"Реестр не найден: {p}", "path": str(p)},
+                            status_code=404)
     try:
         data = read_registry(p)
     except json.JSONDecodeError as exc:
@@ -377,12 +418,6 @@ async def api_run(request: Request) -> JSONResponse:
     if not reg.is_absolute():
         reg = (OUT_DIR / reg).resolve()
     reg.parent.mkdir(parents=True, exist_ok=True)
-    if body.get("fresh", True):
-        for suffix in (".json", ".md"):
-            f = reg.with_suffix(suffix)
-            if f.is_file():
-                f.unlink()
-
     now = (body.get("now") or "").strip()
     if tpl:
         # Свободный шаблон команды: {input} {registry} {out} {now}
@@ -415,7 +450,16 @@ async def api_run(request: Request) -> JSONResponse:
     run = Run("engine")
     run.registry_path = str(reg)
     RUNS[run.id] = run
-    _spawn(run, cmd, cwd, env)
+    fresh_backups: Optional[Dict[Path, Optional[Path]]] = None
+    if body.get("fresh", True):
+        fresh_backups = {}
+        for suffix in (".json", ".md"):
+            target = reg.with_suffix(suffix)
+            backup = target.with_name(f"{target.name}.{run.id}.bak") if target.is_file() else None
+            if backup is not None:
+                os.replace(target, backup)
+            fresh_backups[target] = backup
+    _spawn(run, cmd, cwd, env, fresh_backups, reg)
     return JSONResponse({"ok": True, "run": run.id, "cmd": " ".join(cmd), "registry_path": str(reg)})
 
 
@@ -476,7 +520,11 @@ def api_run_status(run_id: str, since: int = 0) -> JSONResponse:
 async def api_save(request: Request) -> JSONResponse:
     if not effective_features(request).get("edit"):
         return JSONResponse({"ok": False, "error": "Редактирование выключено (FEATURES.edit)."}, status_code=403)
-    body = await json_body(request)
+    try:
+        body = await json_body(request)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": f"Тело запроса не разобрать как JSON: {exc}"},
+                            status_code=400)
     p = Path(body.get("path") or DEFAULT_REGISTRY)
     if not p.is_absolute():
         p = (REPO_ROOT / p).resolve()
@@ -485,18 +533,21 @@ async def api_save(request: Request) -> JSONResponse:
     edits = body.get("edits") or []
     if not isinstance(edits, list):
         return JSONResponse({"ok": False, "error": "Поле edits должно быть списком."}, status_code=400)
+    if not all(isinstance(edit, dict) for edit in edits):
+        return JSONResponse({"ok": False, "error": "Каждая правка должна быть объектом."}, status_code=400)
 
     data = read_registry(p)
     by_id = {ob.get("id"): ob for ob in data.get("obligations", [])}
+    unknown = [str(edit.get("id")) for edit in edits
+               if isinstance(edit, dict) and edit.get("id") not in by_id]
+    if unknown:
+        return JSONResponse({"ok": False, "error": f"Неизвестный id: {', '.join(unknown)}",
+                             "unknown_ids": unknown}, status_code=404)
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     run_id = "web_" + uuid.uuid4().hex[:8]
     changed = 0
-    unknown: List[str] = []
     for edit in edits:
         ob = by_id.get(edit.get("id"))
-        if ob is None:
-            unknown.append(str(edit.get("id")))
-            continue
         touched = False
         for field in ("owner", "due", "status", "what", "due_text", "kind"):
             if field not in edit:
@@ -556,6 +607,8 @@ def api_file(path: str, quote: str = "") -> JSONResponse:
 @app.get("/api/download")
 def api_download(path: str = "", kind: str = "md"):
     """Скачать registry.md (kind=md) или registry.json (kind=json) текущего реестра."""
+    if kind not in ("md", "json"):
+        return PlainTextResponse("Параметр kind должен быть md или json.", status_code=400)
     p = Path(path) if path else ensure_default_registry()
     if not p.is_absolute():
         p = (REPO_ROOT / p).resolve()
