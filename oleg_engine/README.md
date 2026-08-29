@@ -33,8 +33,9 @@ Use `--now YYYY-MM-DD` to set the reference date. Without it, the engine uses th
 | Flag | Default | Effect |
 |---|---|---|
 | `--mode auto\|parallel\|sequential` | `auto` | `auto` extracts multiple new files concurrently. Adjudication remains global in every mode. |
-| `--backend codex\|claude` | `codex` | Codex uses `gpt-5.6-sol` with high reasoning. After two failed Codex attempts, the engine falls back to Claude `opus`. |
+| `--backend codex\|claude` | `codex` | Codex uses `gpt-5.6-sol`. After two failed Codex attempts, the engine falls back to Claude `opus`. |
 | `--model NAME` | backend default | Selects the first backend model. |
+| `--effort low\|medium\|high` | `medium` | Sets Codex reasoning effort for extraction and adjudication. |
 | `--now YYYY-MM-DD` | inferred | Sets the reference date for relative dates. |
 | `--json` | off | Suppresses the human progress line. The final JSON line is present in both modes. |
 | `--prefilter` | off | For files over 16 KiB only, sends signal-bearing 60-line chunks plus one neighbour. Coverage records skipped chunks. |

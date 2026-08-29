@@ -18,6 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--mode", choices=("auto", "parallel", "sequential"), default="auto")
     run.add_argument("--backend", choices=("codex", "claude"), default="codex")
     run.add_argument("--model")
+    run.add_argument("--effort", choices=("low", "medium", "high"), default="medium", help="Codex reasoning effort (default: medium)")
     run.add_argument("--now", help="reference date in YYYY-MM-DD")
     run.add_argument("--json", action="store_true", help="suppress human progress text")
     run.add_argument("--prefilter", action="store_true", help="for files over 16 KiB, send only candidate chunks and one neighbour (default: off)")
@@ -39,6 +40,7 @@ def main(argv: list[str] | None = None) -> int:
             now_arg=args.now,
             prefilter=args.prefilter,
             adjudicate=args.adjudicate,
+            effort=args.effort,
         )
     except (BackendError, OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"engine error: {exc}", file=sys.stderr)

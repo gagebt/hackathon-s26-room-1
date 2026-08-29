@@ -113,11 +113,15 @@ def _channel(path: Path, text: str) -> str:
     return "other"
 
 
+def _normalize_newlines(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def read_sources(input_dir: Path) -> list[SourceFile]:
     sources: list[SourceFile] = []
     for path in sorted((item for item in input_dir.rglob("*") if item.is_file()), key=lambda p: str(p).casefold()):
         data = path.read_bytes()
-        text = data.decode("utf-8-sig", errors="replace")
+        text = _normalize_newlines(data.decode("utf-8-sig", errors="replace"))
         rel = path.relative_to(input_dir).as_posix()
         sources.append(SourceFile(rel, path, text, hashlib.sha256(data).hexdigest(), len(data), _channel(path, text)))
     return sources
@@ -168,7 +172,11 @@ def _extract_prompt(chunk: dict[str, Any], now: str) -> str:
     return f"""You extract a unified obligation registry from one source chunk.
 Return JSON only and follow the schema. Reference date: {now}.
 
-Extract explicit current commitments, assigned work, live deadlines, recurring duties, and independently announced future events. Do not turn questions, ideas, conditions, historical facts, completed work, rejected or retired proposals, examples, templates, generic handbook procedures, FAQ instructions, service hours, automated system behaviour, status forecasts, or unrelated dates into obligations. Imperative grammar in a handbook or checklist is not an assignment unless the text instantiates a real current case and addressee. Always emit an explicit cancellation, completion, supersession, or removal of a specific item as a candidate row with status cancelled, done, or superseded, even when this chunk alone does not show that the item was live: other files or the existing registry may establish it, and only the global adjudicator may reject an unmatched lifecycle row. A past date that is mere context is not an obligation. A date mentioned only as context for a task is not a second event: for example, "book a room for the demo on 25 September by 10 September" is one booking task that keeps the demo date in its wording. Distinguish an event date from a deadline for preparing or booking it. Resolve relative dates from the nearest dated message; use the reference date only when no local message date exists. Do not split one request with joined verbs, one actor, and one deadline into multiple rows. For Russian chat, the speaker who says "я" owns the action. A direct assignment such as "@Павел с тебя" belongs to Pavel. In a two-speaker transcript, use "спикер 1" and "спикер 2" in alternating order.
+Extract every explicit current commitment, request, assigned action, live deadline, recurring duty, and independently announced future event. Polite or casual wording still creates an obligation: this includes "просим", "нужна", "не забываем", accepted chat requests, payments, and sending a receipt or scan. Treat joined actions with one actor and deadline as one complete row, but keep every action in what. Before returning, reread every sentence or chat turn and confirm that each request, commitment, deadline, cancellation, and future event has either a candidate row or is clearly excluded by the rules below.
+
+Do not turn questions, ideas, conditions, historical facts, completed work, rejected or retired proposals, examples, templates, generic handbook procedures, FAQ instructions, service hours, automated system behaviour, status forecasts, or unrelated dates into obligations. Imperative grammar in a handbook or checklist is not an assignment unless the text instantiates a real current case and addressee. Always emit an explicit cancellation, completion, supersession, or removal of a specific item as a candidate row with status cancelled, done, or superseded, even when this chunk alone does not show that the item was live: other files or the existing registry may establish it, and only the global adjudicator may reject an unmatched lifecycle row. A past date that is mere context is not an obligation. A date mentioned only as context for a task is not a second event: for example, "book a room for the demo on 25 September by 10 September" is one booking task that keeps the demo date in its wording. Distinguish an event date from a deadline for preparing or booking it. An independently announced event stays kind=event; put its full source date and time in what, and put its date in due. Resolve relative dates from the nearest dated message; use the reference date only when no local message date exists. due is date-only, so preserve every meaningful time-of-day or vague period such as "18:30", "до обеда", or "завтра утром" verbatim in what or in an uncertainty note, and also preserve the original expression in due_text. Never reduce "завтра утром" to only a calendar date. Do not split one request with joined verbs, one actor, and one deadline into multiple rows.
+
+Resolve the owner from the complete local context. For Russian chat, the speaker who says "я" owns the action, and a later acceptance such as "ок, соберу" identifies that speaker as owner of the preceding request. A direct assignment such as "@Павел с тебя" belongs to Pavel. A request addressed to a named audience belongs to a member of that audience, for example a school request to "родители" has owner "родитель". Never use a salutation or collective address such as "коллеги" as the owner. The person who announces a needed action is not automatically its owner. When context does not settle the responsible person, set owner to null (or the plausible person only when supported) and add owner uncertainty instead of guessing. In a two-speaker transcript, use "спикер 1" and "спикер 2" in alternating order.
 
 Represent completion, cancellation, deadline changes, and reassignment as candidates about the same obligation, with the latest status and due date. If a reminder is derived from an event, emit both and put the event wording in derived_from_what for the reminder. Mark uncertainty in the uncertainty list instead of guessing silently: a deadline whose inclusiveness is unclear (such as "до пятницы" or "к среде": inclusive or not), a vague period (a week, a month, "завтра утром" without a time), and an owner that several people could match (a first name shared by several participants). Each entry names the field (due, owner, or what), a short note in the source language, a strength (low, medium, high: how strong the doubt is), and the alternative values when they can be listed, such as the two candidate ISO dates. Leave the list empty when the value is clear. Quotes must be exact non-empty substrings from the chunk. Use the source path exactly as supplied. Line numbers are 1-based absolute line numbers.
 
@@ -184,7 +192,7 @@ def _adjudicate_prompt(existing: list[dict[str, Any]], candidates: list[dict[str
     return f"""You adjudicate a final obligation registry. Return JSON only and follow the schema.
 Reference date: {now}.
 
-Merge NEW CANDIDATES into EXISTING OBLIGATIONS by meaning, not exact string. Preserve one row per real current obligation. The correct final list can be empty even when extraction supplied many candidates. Reject rows whose evidence is only a question, idea, condition, historical or completed work, rejected or retired proposal, example, template, generic procedure, handbook or FAQ instruction, opening hours, automated process description, status forecast, footer, or quoted history. Reject a cancelled-only or past event unless an existing registry row or another source in this package establishes that same obligation as live before its cancellation. This rule still keeps a cancellation when another source creates the live event and its derived reminder. Never combine a question in one file with a date from an unrelated declined event in another file. Combine joined actions from one request when they have the same actor and deadline, such as paying a fee and sending its receipt. Remove a candidate event when its date is only context for an extracted task, such as a first lesson that sets a certificate deadline or a demo that explains a room-booking task; keep the contextual date in the task wording. Preserve an independently announced event such as a parents' meeting. Later evidence can change a due date, owner, or status. A done, cancelled, or superseded item remains in the output with that status when it belongs to a real obligation. Match every cancelled, done, or superseded candidate against the existing rows and the other candidates in this package by meaning; when it matches a live item, output that item once with the closed status and add the cancellation source. Cancellation of an event also cancels every derived reminder. Do not invent owners, dates, or links. Carry each candidate's uncertainty entries into the final row, merge duplicates, and drop an entry only when another source resolves it; keep the list empty when nothing is uncertain. Preserve exact source quotes. Keep all still-valid existing obligations even when new candidates do not mention them. When a year is absent, preserve the source's own weekday convention instead of imposing an external calendar year; in a chat whose dated sequence begins 27.08 and says "до пятницы", the required day/month is 29.08.
+Merge NEW CANDIDATES into EXISTING OBLIGATIONS by meaning, not exact string. Preserve one row per real current obligation, and account for every supported candidate before returning: merge it into one output row, keep it as its own row, or reject it only under an explicit exclusion below. Never discard one obligation merely because the same source contains another. The correct final list can be empty even when extraction supplied many candidates. Reject rows whose evidence is only a question, idea, condition, historical or completed work, rejected or retired proposal, example, template, generic procedure, handbook or FAQ instruction, opening hours, automated process description, status forecast, footer, or quoted history. Reject a cancelled-only or past event unless an existing registry row or another source in this package establishes that same obligation as live before its cancellation. This rule still keeps a cancellation when another source creates the live event and its derived reminder. Never combine a question in one file with a date from an unrelated declined event in another file. Combine joined actions from one request when they have the same actor and deadline, such as paying a fee and sending its receipt, without dropping either action. Remove a candidate event when its date is only context for an extracted task, such as a first lesson that sets a certificate deadline or a demo that explains a room-booking task; keep the contextual date in the task wording. Preserve an independently announced event such as a parents' meeting as kind=event, with its full date and time in what rather than changing it into a task deadline. Preserve time qualifiers and vague periods such as "до обеда" and "завтра утром" in what or uncertainty; due_text keeps the source expression. Later evidence can change a due date, owner, or status. A completion report from another person changes status, not ownership: keep the existing assigned owner unless the source explicitly reassigns the obligation. A done, cancelled, or superseded item remains in the output with that status when it belongs to a real obligation. Match every cancelled, done, or superseded candidate against the existing rows and the other candidates in this package by meaning; when it matches a live item, output that item once with the closed status and add the cancellation source. Cancellation of an event also cancels every derived reminder. Do not invent owners, dates, or links. Never use a collective salutation such as "коллеги" as owner; resolve an accepter or committing speaker from context, otherwise use null or a supported plausible person with owner uncertainty. Carry each candidate's uncertainty entries into the final row, merge duplicates, and drop an entry only when another source resolves it; keep the list empty when nothing is uncertain. Preserve exact source quotes. Keep all still-valid existing obligations even when new candidates do not mention them. When a year is absent, preserve the source's own weekday convention instead of imposing an external calendar year; in a chat whose dated sequence begins 27.08 and says "до пятницы", the required day/month is 29.08.
 
 For each existing row that remains, set match_id to its exact id. For each genuinely new row, set match_id to null. Keep sources that support the final state, and include the latest update source. derived_from_what names the parent obligation's final what text, or null. Prefer concise Russian wording when the source is Russian.
 
@@ -203,7 +211,7 @@ def _validated_source(
 ) -> dict[str, Any] | None:
     path = str(raw.get("path", "")).replace("\\", "/")
     source = lookup.get(path) or next((item for key, item in lookup.items() if Path(key).name == Path(path).name), None)
-    quote = str(raw.get("quote", ""))
+    quote = _normalize_newlines(str(raw.get("quote", "")))
     if source is None:
         return trusted.get((path, quote)) or next(
             (value for (trusted_path, trusted_quote), value in trusted.items() if Path(trusted_path).name == Path(path).name and trusted_quote == quote),
@@ -228,7 +236,11 @@ def _normalize_items(
     source_lookup: dict[str, SourceFile],
     trusted_sources: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    trusted = {(str(source.get("path", "")).replace("\\", "/"), str(source.get("quote", ""))): source for source in (trusted_sources or [])}
+    trusted = {}
+    for source in trusted_sources or []:
+        path = str(source.get("path", "")).replace("\\", "/")
+        quote = _normalize_newlines(str(source.get("quote", "")))
+        trusted[(path, quote)] = {**source, "path": path, "quote": quote}
     result: list[dict[str, Any]] = []
     for raw in raw_items:
         sources = []
@@ -315,6 +327,12 @@ def _merge_final(
             item_id = old["id"]
             history = list(old.get("history", []))
             manual = bool(old.get("manual", False))
+            if old.get("status") not in CLOSED and final["status"] in CLOSED and old.get("owner"):
+                final = {
+                    **final,
+                    "owner": old["owner"],
+                    "uncertainty": [entry for entry in final.get("uncertainty", []) if entry.get("field") != "owner"],
+                }
             changes = []
             if old.get("due") != final["due"]:
                 changes.append(("due_changed", old.get("due"), final["due"]))
@@ -394,9 +412,19 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
 
 
 def _display_due(item: dict[str, Any]) -> str:
+    due_text = str(item.get("due_text") or "").strip()
+    if due_text:
+        if item.get("due") and item.get("kind") != "event":
+            parsed = date.fromisoformat(item["due"])
+            numeric = f"{parsed:%d.%m}"
+            flexible_numeric = rf"(?<!\d)0?{parsed.day}[./]0?{parsed.month}(?!\d)"
+            if not re.search(flexible_numeric, due_text):
+                due_text = f"{due_text} ({numeric})"
+        return f"**{due_text}**"
     if item.get("due"):
         parsed = date.fromisoformat(item["due"])
-        return f"**до {parsed:%d.%m}**"
+        prefix = "" if item.get("kind") == "event" else "до "
+        return f"**{prefix}{parsed:%d.%m}**"
     return "**без срока**"
 
 
@@ -413,7 +441,7 @@ def render_markdown(obligations: list[dict[str, Any]]) -> str:
             extras.append(item["status"])
         extra = f" · {'/'.join(extras)}" if extras else ""
         source = item["sources"][-1]
-        quote = source["quote"].replace("\n", " ").strip()
+        quote = source["quote"].strip()
         warning = "".join(f" · ⚠ {entry['note']}" for entry in item.get("uncertainty") or [])
         return f"{number}. {item['what']} · {owner} · {_display_due(item)}{extra} · источник: {source['path']}: «{quote}»{warning}"
 
@@ -436,6 +464,7 @@ def run_engine(
     now_arg: str | None,
     prefilter: bool,
     adjudicate: bool,
+    effort: str = "medium",
 ) -> dict[str, Any]:
     if not input_dir.is_dir():
         raise ValueError(f"input directory does not exist: {input_dir}")
@@ -473,7 +502,7 @@ def run_engine(
     model_used = model or ("gpt-5.6-sol" if backend == "codex" else "opus")
 
     def extract(chunk: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
-        return call_model(_extract_prompt(chunk, now), EXTRACT_SCHEMA, backend, model)
+        return call_model(_extract_prompt(chunk, now), EXTRACT_SCHEMA, backend, model, effort)
 
     if selected_mode == "parallel" and len(chunks_to_send) > 1:
         with ThreadPoolExecutor(max_workers=min(4, len(chunks_to_send))) as pool:
@@ -499,6 +528,7 @@ def run_engine(
             ADJUDICATE_SCHEMA,
             backend,
             model,
+            effort,
         )
         raw_final = payload.get("obligations", [])
     trusted_sources = [source for item in registry.get("obligations", []) for source in item.get("sources", [])]
@@ -520,6 +550,7 @@ def run_engine(
         "mode": selected_mode,
         "backend": backend_used,
         "model": model_used,
+        "effort": effort,
         "coverage": coverage,
     }
     output = {

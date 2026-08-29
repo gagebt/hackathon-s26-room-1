@@ -97,7 +97,7 @@ def _coerce_response(value: Any, schema: dict[str, Any]) -> dict[str, Any]:
     raise ValueError("backend response does not match the requested top-level object")
 
 
-def _run_codex(prompt: str, schema: dict[str, Any], model: str) -> dict[str, Any]:
+def _run_codex(prompt: str, schema: dict[str, Any], model: str, effort: str) -> dict[str, Any]:
     failures: list[str] = []
     with tempfile.TemporaryDirectory(prefix="oleg-engine-") as temp:
         temp_path = Path(temp)
@@ -107,7 +107,7 @@ def _run_codex(prompt: str, schema: dict[str, Any], model: str) -> dict[str, Any
         codex, use_shell = _executable("codex")
         command = [
             codex, "exec", "-m", model,
-            "-c", "model_reasoning_effort=high",
+            "-c", f"model_reasoning_effort={effort}",
             "--skip-git-repo-check", "--sandbox", "read-only",
             "--ignore-rules", "--disable", "default_mode_request_user_input",
             "--output-schema", str(schema_path), "-o", str(output_path), "-",
@@ -176,6 +176,7 @@ def call_model(
     schema: dict[str, Any],
     backend: str,
     model: str | None,
+    effort: str = "medium",
 ) -> tuple[dict[str, Any], str, str]:
     if backend == "claude":
         selected = model or "opus"
@@ -183,7 +184,7 @@ def call_model(
 
     selected = model or "gpt-5.6-sol"
     try:
-        return _run_codex(prompt, schema, selected), "codex", selected
+        return _run_codex(prompt, schema, selected, effort), "codex", selected
     except BackendError as codex_error:
         try:
             return _run_claude(prompt, "opus", schema), "claude", "opus"
