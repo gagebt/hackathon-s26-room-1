@@ -148,5 +148,36 @@ class TemplateFillingTests(unittest.TestCase):
         run_process.assert_not_called()
 
 
+class DefaultEngineTests(unittest.TestCase):
+    def test_repository_engine_sets_template_and_pythonpath(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            (root / "oleg_pipeline").mkdir()
+            (root / "oleg_engine").mkdir()
+
+            template, child_env = cli.resolve_default_engine(root, {})
+
+        self.assertEqual(template, cli.DEFAULT_ENGINE_TEMPLATE)
+        self.assertEqual(child_env["PYTHONPATH"], str(root))
+
+    def test_missing_default_engine_returns_2_and_names_searches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            pipeline_dir = root / "oleg_pipeline"
+            pipeline_dir.mkdir()
+            with (
+                patch.object(cli, "PACKAGE_DIR", pipeline_dir),
+                patch.dict(cli.os.environ, {}, clear=True),
+                patch("sys.stderr") as stderr,
+            ):
+                code = cli.main(["run", "--examples", str(root / "examples")])
+
+        message = "".join(call.args[0] for call in stderr.write.call_args_list if call.args)
+        self.assertEqual(code, 2)
+        self.assertIn(f"репозиторий: {root}", message)
+        self.assertIn("OLEG_ENGINE_DIR: не задан", message)
+        self.assertIn(str(root.parent / "wt-engine"), message)
+
+
 if __name__ == "__main__":
     unittest.main()

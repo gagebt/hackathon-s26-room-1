@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import sys
 import time
-from typing import Iterable
+from typing import Iterable, Mapping
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -143,6 +143,37 @@ def _shell_quote(value: Path | str) -> str:
     if os.name == "nt":
         return subprocess.list2cmdline([text])
     return shlex.quote(text)
+
+
+DEFAULT_ENGINE_TEMPLATE = "python -m oleg_engine run --input {input} --registry {registry}"
+
+
+def resolve_default_engine(
+    repository_root: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> tuple[str, dict[str, str]]:
+    root = (repository_root or PACKAGE_DIR.parent).resolve()
+    env_source = os.environ if environ is None else environ
+    configured = env_source.get("OLEG_ENGINE_DIR")
+    candidates = [root]
+    if configured:
+        candidates.append(Path(configured).expanduser())
+    candidates.append(root.parent / "wt-engine")
+
+    for candidate in candidates:
+        engine_root = candidate.resolve()
+        if (engine_root / "oleg_engine").is_dir():
+            child_env = dict(env_source)
+            previous = child_env.get("PYTHONPATH")
+            child_env["PYTHONPATH"] = str(engine_root) + (os.pathsep + previous if previous else "")
+            return DEFAULT_ENGINE_TEMPLATE, child_env
+
+    searched = [f"репозиторий: {root}"]
+    searched.append(
+        f"OLEG_ENGINE_DIR: {Path(configured).expanduser().resolve()}" if configured else "OLEG_ENGINE_DIR: не задан"
+    )
+    searched.append(f"соседний worktree: {(root.parent / 'wt-engine').resolve()}")
+    raise ValueError("движок oleg_engine не найден; проверены: " + "; ".join(searched))
 
 
 def render_engine_command(template: str, scenario: Scenario, registry_path: Path) -> str:
@@ -370,6 +401,8 @@ def run_scenario(
     requested_judge: str,
     parent: Result | None,
     should_judge: bool,
+    engine_env: dict[str, str] | None = None,
+    append_reference_now: bool = False,
 ) -> Result:
     scenario_out = out_dir / scenario.name
     scenario_out.mkdir(parents=True, exist_ok=True)
@@ -383,13 +416,17 @@ def run_scenario(
         except RuntimeError as exc:
             return Result(scenario, False, str(exc), [], None, None, False, 0.0, "none")
     try:
-        command = render_engine_command(engine_template, scenario, registry_path)
+        template = engine_template
+        if append_reference_now and REFERENCE_LINE_RE.search(scenario.expected):
+            template += " --now {now}"
+        command = render_engine_command(template, scenario, registry_path)
     except ValueError as exc:
         return Result(scenario, False, str(exc), [], None, None, False, 0.0, "none")
     started = time.monotonic()
     try:
         completed = _run_process(
             command,
+            env=engine_env,
             timeout=int(os.getenv("OLEG_PIPELINE_ENGINE_TIMEOUT", "600")),
             shell=True,
         )
@@ -518,8 +555,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
             for scenario in ready:
                 parent_scenario = parent_by_name[scenario.name]
                 parent_result = results_by_name.get(parent_scenario.name) if parent_scenario else None
-                future = executor.submit(
-                    run_scenario,
+                call_args = (
                     scenario,
                     args.engine,
                     out_dir,
@@ -527,6 +563,15 @@ def run_pipeline(args: argparse.Namespace) -> int:
                     parent_result,
                     scenario.name in selected_names,
                 )
+                if getattr(args, "engine_env", None) is None:
+                    future = executor.submit(run_scenario, *call_args)
+                else:
+                    future = executor.submit(
+                        run_scenario,
+                        *call_args,
+                        args.engine_env,
+                        True,
+                    )
                 futures[future] = scenario
             for future in concurrent.futures.as_completed(futures):
                 scenario = futures[future]
@@ -560,7 +605,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     run = subparsers.add_parser("run", help="запустить примеры через указанный движок")
     run.add_argument("--examples", required=True, help="каталог со сценариями input/ + expected.md")
-    run.add_argument("--engine", required=True, help="команда с {input}, {registry} и необязательным {now}")
+    run.add_argument("--engine", help="команда с {input}, {registry} и необязательным {now}; по умолчанию oleg_engine")
     run.add_argument("--judge", choices=("codex", "claude", "none"), default="codex", help="смысловой судья (по умолчанию: codex)")
     run.add_argument("--out", default="oleg_pipeline/out", help="каталог отчёта и реестров")
     run.add_argument("--only", help="запустить сценарии, имя которых содержит эту строку")
@@ -574,6 +619,13 @@ def main(argv: Iterable[str] | None = None) -> int:
     if args.command == "run":
         if args.jobs < 1:
             parser.error("--jobs должен быть не меньше 1")
+        args.engine_env = None
+        if args.engine is None:
+            try:
+                args.engine, args.engine_env = resolve_default_engine()
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
         try:
             return run_pipeline(args)
         except ValueError as exc:

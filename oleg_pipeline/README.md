@@ -4,7 +4,13 @@
 
 ## Быстрый запуск
 
-Из корня репозитория. Первая команда работает на этой ветке без внешних зависимостей (встроенный fake engine):
+Из корня репозитория. По умолчанию pipeline запускает движок владельца `oleg_engine`:
+
+```powershell
+python -m oleg_pipeline run --examples examples
+```
+
+Встроенный fake engine:
 
 ```powershell
 python -m oleg_pipeline run `
@@ -13,7 +19,7 @@ python -m oleg_pipeline run `
   --out oleg_pipeline/out/fake
 ```
 
-Штатный движок комнаты (`cli.py`) через адаптер `room_engine.py`. После слияния в main `cli.py` лежит в корне репозитория, и `--room-root` не нужен; до слияния укажите `--room-root <путь к checkout с cli.py>`:
+Движок комнаты (`cli.py`) через необязательный адаптер `room_engine.py`:
 
 ```powershell
 python -m oleg_pipeline run `
@@ -22,21 +28,16 @@ python -m oleg_pipeline run `
   --out oleg_pipeline/out/room
 ```
 
-`oleg_engine` (нужна папка движка в репозитории после слияния или на `PYTHONPATH`):
-
-```powershell
-python -m oleg_pipeline run `
-  --examples examples `
-  --engine "python -m oleg_engine run --input {input} --registry {registry}" `
-  --out oleg_pipeline/out
-```
-
 Команда движка обязана содержать `{input}` и `{registry}`. Если она содержит `{now}`, pipeline берёт дату из строки `Опорное время`, `Reference time` или `Reference clock` в `expected.md`. Если такой строки нет, используется текущая локальная дата.
 
 Движок должен завершиться с кодом 0 и создать `registry.json` и `registry.md` рядом. Pipeline не зависит от внутренней реализации движка.
 
 **Любые данные.** Подходит любая папка, чьи подпапки содержат `input/` и `expected.md`: укажите её через `--examples <папка>`.
 Подходит любой движок: подставьте его команду в шаблон `--engine` с `{input}` и `{registry}`.
+
+## Как это связано
+
+[`oleg_engine`](../oleg_engine/README.md) строит реестр, этот pipeline проверяет его по смыслу, а кнопка «Run examples» в [`oleg_web`](../oleg_web/README.md) запускает pipeline. Комнатный `cli.py` для этой связки не нужен.
 
 ## Правило цепочки
 
@@ -63,7 +64,7 @@ python -m oleg_pipeline run ... --judge none
 ## Флаги
 
 - `--examples <dir>`: обязательный каталог сценариев. Каждый сценарий содержит `input/` и `expected.md`.
-- `--engine <template>`: обязательная команда движка.
+- `--engine <template>`: необязательная команда движка; по умолчанию используется `oleg_engine`.
 - `--judge codex|claude|none`: судья; по умолчанию `codex`.
 - `--out <dir>`: реестры и `report.md`; по умолчанию `oleg_pipeline/out`.
 - `--jobs N`: параллельные независимые сценарии; по умолчанию 4.
