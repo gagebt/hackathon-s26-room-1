@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import shutil
@@ -151,6 +152,88 @@ def read_registry(path: Path) -> Dict[str, Any]:
         return json.load(fh)
 
 
+def flatten_registry(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the UI registry shape, adapting the room CLI graph when needed."""
+    if isinstance(data, dict) and isinstance(data.get("obligations"), list):
+        return data
+
+    nodes = data.get("nodes") if isinstance(data, dict) else None
+    edges = data.get("edges") if isinstance(data, dict) else None
+    if not (
+        isinstance(nodes, dict)
+        and isinstance(nodes.get("commitment"), list)
+        and isinstance(edges, list)
+    ):
+        raise ValueError(
+            "Неподдерживаемая форма реестра: ожидается obligations[] или граф nodes/edges."
+        )
+
+    chunks = {row.get("id"): row for row in nodes.get("chunk", []) if isinstance(row, dict)}
+    source_nodes = {row.get("id"): row for row in nodes.get("source", []) if isinstance(row, dict)}
+    evidence: Dict[str, List[Dict[str, Any]]] = {}
+    prepares: Dict[str, str] = {}
+    derived: Dict[str, str] = {}
+    supersedes: Dict[str, str] = {}
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        kind = edge.get("type") or edge.get("kind")
+        src, dst = edge.get("src"), edge.get("dst")
+        if kind == "EVIDENCED_BY":
+            chunk = chunks.get(dst)
+            if chunk:
+                source = source_nodes.get(chunk.get("source_id")) or {}
+                evidence.setdefault(src, []).append({
+                    "path": source.get("name") or "—",
+                    "quote": chunk.get("quote") or chunk.get("text") or "",
+                    "source_kind": source.get("kind") or "",
+                })
+        elif kind == "PREPARES":
+            prepares[src] = dst
+        elif kind == "DERIVED_FROM":
+            derived[src] = dst
+        elif kind == "SUPERSEDES":
+            supersedes[src] = dst
+
+    obligations: List[Dict[str, Any]] = []
+    for commitment in nodes["commitment"]:
+        if not isinstance(commitment, dict):
+            continue
+        deadline = commitment.get("deadline") or {}
+        raw_uncertainty = commitment.get("uncertainty") or []
+        uncertainty = [
+            item if isinstance(item, dict) else {
+                "field": "what", "strength": "medium", "note": str(item), "alternatives": []
+            }
+            for item in raw_uncertainty
+        ]
+        commitment_id = commitment.get("id")
+        obligations.append({
+            "id": commitment_id,
+            "key": commitment.get("key"),
+            "what": commitment.get("what") or "",
+            "owner": commitment.get("owner"),
+            "due": commitment.get("due") or deadline.get("date"),
+            "due_text": commitment.get("due_raw") or deadline.get("raw"),
+            "kind": commitment.get("kind") or "task",
+            "status": commitment.get("status") or "open",
+            "sources": evidence.get(commitment_id, []),
+            "history": [],
+            "uncertainty": uncertainty,
+            "prepares": prepares.get(commitment_id),
+            "derived_from": derived.get(commitment_id),
+            "supersedes": supersedes.get(commitment_id),
+            "imported_from": "room-cli",
+        })
+    return {
+        "version": 1,
+        "sources": [],
+        "runs": data.get("events", []),
+        "obligations": obligations,
+        "imported_from": "room-cli",
+    }
+
+
 def write_registry(path: Path, data: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -159,6 +242,64 @@ def write_registry(path: Path, data: Dict[str, Any]) -> None:
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp, path)
+
+
+def _fallback_markdown(obligations: List[Dict[str, Any]], reason: str) -> str:
+    """Small renderer used only when the engine renderer cannot be used."""
+    def cell(value: Any) -> str:
+        return str(value if value not in (None, "") else "—").replace("|", "\\|").replace("\n", " ")
+
+    lines = [
+        f"<!-- {reason}; использован минимальный Markdown-рендерер oleg_web. -->",
+        "# Реестр обязательств",
+        "",
+        "| Что | Владелец | Срок | Вид | Статус | Источник |",
+        "|---|---|---|---|---|---|",
+    ]
+    for item in obligations:
+        source = (item.get("sources") or [{}])[-1]
+        source_text = f"{source.get('path') or '—'}: «{source.get('quote') or ''}»"
+        lines.append(
+            "| " + " | ".join(cell(value) for value in (
+                item.get("what"), item.get("owner"), item.get("due_text") or item.get("due"),
+                item.get("kind"), item.get("status"), source_text,
+            )) + " |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def write_registry_markdown(path: Path, data: Dict[str, Any]) -> None:
+    """Regenerate adjacent registry.md with the engine renderer when available."""
+    renderer = None
+    module_root = engine_dir()
+    inserted = False
+    if module_root is not None:
+        root_text = str(module_root)
+        if root_text not in sys.path:
+            sys.path.insert(0, root_text)
+            inserted = True
+        try:
+            renderer = importlib.import_module("oleg_engine.engine").render_markdown
+        except (ImportError, AttributeError):
+            renderer = None
+        finally:
+            if inserted:
+                sys.path.remove(root_text)
+
+    obligations = data.get("obligations", [])
+    if renderer is None:
+        markdown = _fallback_markdown(obligations, "oleg_engine.render_markdown недоступен")
+    else:
+        try:
+            markdown = renderer(obligations)
+        except (KeyError, TypeError, ValueError, IndexError) as exc:
+            markdown = _fallback_markdown(
+                obligations, f"oleg_engine.render_markdown не обработал данные ({type(exc).__name__})"
+            )
+    markdown_path = path.with_suffix(".md")
+    tmp = markdown_path.with_suffix(markdown_path.suffix + ".tmp")
+    tmp.write_text(markdown, encoding="utf-8", newline="\n")
+    os.replace(tmp, markdown_path)
 
 
 def ensure_default_registry() -> Path:
@@ -233,9 +374,8 @@ def _restore_or_commit_fresh(run: Run, backups: Dict[Path, Optional[Path]], requ
     valid = run.exit_code == 0 and required.is_file()
     if valid:
         try:
-            data = read_registry(required)
-            valid = isinstance(data.get("obligations"), list)
-        except (OSError, json.JSONDecodeError, AttributeError):
+            flatten_registry(read_registry(required))
+        except (OSError, json.JSONDecodeError, AttributeError, ValueError):
             valid = False
     if valid:
         for backup in backups.values():
@@ -384,9 +524,11 @@ def api_registry(path: str = "", registry: str = "") -> JSONResponse:
         return JSONResponse({"ok": False, "error": f"Реестр не найден: {p}", "path": str(p)},
                             status_code=404)
     try:
-        data = read_registry(p)
+        data = flatten_registry(read_registry(p))
     except json.JSONDecodeError as exc:
         return JSONResponse({"ok": False, "error": f"Битый JSON в {p.name}: {exc}", "path": str(p)})
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc), "path": str(p)}, status_code=422)
     return JSONResponse({"ok": True, "path": str(p), "registry": data,
                          "mtime": p.stat().st_mtime})
 
@@ -536,7 +678,10 @@ async def api_save(request: Request) -> JSONResponse:
     if not all(isinstance(edit, dict) for edit in edits):
         return JSONResponse({"ok": False, "error": "Каждая правка должна быть объектом."}, status_code=400)
 
-    data = read_registry(p)
+    try:
+        data = flatten_registry(read_registry(p))
+    except (json.JSONDecodeError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": f"Реестр нельзя сохранить: {exc}"}, status_code=400)
     by_id = {ob.get("id"): ob for ob in data.get("obligations", [])}
     unknown = [str(edit.get("id")) for edit in edits
                if isinstance(edit, dict) and edit.get("id") not in by_id]
@@ -570,6 +715,7 @@ async def api_save(request: Request) -> JSONResponse:
             ob["manual"] = True
             changed += 1
     write_registry(p, data)
+    write_registry_markdown(p, data)
     fresh = read_registry(p)  # перечитали файл — доказательство записи
     return JSONResponse({"ok": True, "path": str(p), "changed": changed,
                          "unknown_ids": unknown, "run_id": run_id,

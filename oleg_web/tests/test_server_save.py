@@ -86,6 +86,17 @@ class SaveEndpointTests(unittest.TestCase):
             (fresh_row["owner"], fresh_row["due"], fresh_row["status"]),
         )
 
+    def test_save_regenerates_adjacent_markdown(self) -> None:
+        markdown = self.registry.with_suffix(".md")
+        markdown.write_text("stale markdown\n", encoding="utf-8")
+
+        response = self._save([{"id": "ob_0001", "owner": "Анна"}])
+
+        self.assertEqual(200, response.status_code)
+        rendered = markdown.read_text(encoding="utf-8")
+        self.assertNotEqual("stale markdown\n", rendered)
+        self.assertIn("Анна", rendered)
+
     def test_malformed_json_returns_400_json(self) -> None:
         """HIGH defect: malformed save JSON returns 500 instead of client error 400."""
         response = self.client.post(

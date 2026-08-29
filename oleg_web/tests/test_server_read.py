@@ -42,6 +42,62 @@ class ServerReadTests(unittest.TestCase):
             [{key: row[key] for key in fields} for row in actual],
         )
 
+    def test_graph_registry_is_served_as_flat_room_cli_rows(self) -> None:
+        graph = {
+            "nodes": {
+                "source": [{"id": "src-1", "kind": "email", "name": "письмо.txt"}],
+                "chunk": [{
+                    "id": "ch-1", "text": "Контекст", "quote": "точная цитата",
+                    "source_id": "src-1",
+                }],
+                "commitment": [
+                    {
+                        "id": "c-1", "key": "send", "what": "Отправить ответ",
+                        "owner": "Олег", "due": "2026-09-01", "due_raw": "до 1 сентября",
+                        "deadline": {"raw": "до 1 сентября", "date": "2026-09-01"},
+                        "kind": "task", "status": "open", "uncertainty": [],
+                    },
+                    {
+                        "id": "c-2", "key": "meeting", "what": "Встреча команды",
+                        "owner": None, "due": "2026-09-02", "deadline": {},
+                        "kind": "event", "status": "done", "uncertainty": [],
+                    },
+                ],
+            },
+            "edges": [{"src": "c-1", "type": "EVIDENCED_BY", "dst": "ch-1"}],
+            "events": [],
+        }
+        self.registry.write_text(json.dumps(graph, ensure_ascii=False), encoding="utf-8")
+
+        response = self.client.get("/api/registry", params={"path": str(self.registry)})
+
+        self.assertEqual(200, response.status_code)
+        rows = response.json()["registry"]["obligations"]
+        self.assertEqual(2, len(rows))
+        self.assertEqual(
+            ("Отправить ответ", "Олег", "2026-09-01", "open"),
+            (rows[0]["what"], rows[0]["owner"], rows[0]["due"], rows[0]["status"]),
+        )
+        self.assertEqual(
+            [{"path": "письмо.txt", "quote": "точная цитата", "source_kind": "email"}],
+            rows[0]["sources"],
+        )
+        self.assertEqual([], rows[1]["sources"])
+        self.assertTrue(all(row["imported_from"] == "room-cli" for row in rows))
+
+    def test_unknown_registry_shape_returns_one_readable_error(self) -> None:
+        self.registry.write_text('{"unexpected": true}', encoding="utf-8")
+
+        response = self.client.get("/api/registry", params={"path": str(self.registry)})
+
+        self.assertEqual(422, response.status_code)
+        payload = response.json()
+        self.assertFalse(payload["ok"])
+        self.assertEqual(
+            "Неподдерживаемая форма реестра: ожидается obligations[] или граф nodes/edges.",
+            payload["error"],
+        )
+
     def test_missing_registry_query_returns_json_error_without_traceback(self) -> None:
         """HIGH defect: ?registry is ignored, so the default data is returned."""
         missing = Path(self.temp_dir.name) / "missing.json"
